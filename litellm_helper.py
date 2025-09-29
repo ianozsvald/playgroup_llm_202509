@@ -41,6 +41,29 @@ providers = {
 }
 
 
+def ensure_system_certs():
+    """Ensure Python SSL uses system certificates.
+
+    Tries pip-system-certs' truststore injection first; silently
+    continues if unavailable. Must be called before any network I/O.
+    """
+    try:
+        # Prefer pip-system-certs which integrates with pip's vendored truststore
+        import pip_system_certs.wrapt_requests as _psc  # type: ignore
+
+        _psc.inject_truststore()
+        return
+    except Exception:
+        # As a fallback, try the public truststore package if present
+        try:
+            import truststore  # type: ignore
+
+            truststore.inject_into_ssl()
+        except Exception:
+            # Leave default cert handling in place
+            pass
+
+
 def disable_litellm_logging():
     # disable litllm debug logs
     # https://github.com/BerriAI/litellm/issues/6813
@@ -48,6 +71,8 @@ def disable_litellm_logging():
 
 
 def check_litellm_key(args):
+    # Ensure SSL uses system trust store before validating key (prevents TLS/auth false negatives)
+    ensure_system_certs()
     api_key_valid = litellm.check_valid_key(
         api_key=os.environ["OPENROUTER_API_KEY"], model=args.model_name
     )

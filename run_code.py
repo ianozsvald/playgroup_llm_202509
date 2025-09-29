@@ -9,6 +9,10 @@ python run_code.py -p 9565186b -c example_solutions/ex_soln_9565186b.py
 import copy
 import pickle
 
+import multiprocessing as mp
+import concurrent.futures as cf
+import functools
+import sys
 import joblib
 import numpy as np
 
@@ -66,21 +70,30 @@ def execute_transform(code_as_line, problems):
             print(f"!!!! DEBUGGING run_code.py execute_transform n_jobs: {n_jobs}")
 
         try:
-            # n_jobs = 1 for serial process
-            # result_chunks = joblib.Parallel(n_jobs=len(problems), timeout=1)(
-            result_chunks = joblib.Parallel(n_jobs=n_jobs, timeout=5)(
-                joblib.delayed(exec_and_run)(
-                    code_as_line, np.array(copy.deepcopy(prob["input"]))
+            if sys.platform == "darwin":
+                # macOS: use spawn-based executor for stability
+                ctx = mp.get_context("spawn")
+                exec_fn = functools.partial(exec_and_run, code_as_line)
+                initials = [np.array(copy.deepcopy(prob["input"])) for prob in problems]
+                with cf.ProcessPoolExecutor(max_workers=n_jobs, mp_context=ctx) as executor:
+                    result_chunks = list(executor.map(exec_fn, initials))
+            else:
+                # Linux/others: keep original joblib-based parallelism
+                result_chunks = joblib.Parallel(
+                    n_jobs=n_jobs,
+                    timeout=5,
+                    backend="loky",
+                    prefer="processes",
+                    max_nbytes=None,
+                    mmap_mode=None,
+                )(
+                    joblib.delayed(exec_and_run)(
+                        code_as_line, np.array(copy.deepcopy(prob["input"]))
+                    )
+                    for prob in problems
                 )
-                for prob in problems
-            )
         except (RuntimeError, pickle.PicklingError, joblib.parallel.TimeoutError):
-            # joblib was unhappy, possibly because of a raw_input
-            # e.g. RuntimeError: input(): lost sys.stdin
-            # also loxy error PicklingError: Could not pickle the task to send it to the workers.
-            # TimeoutError occurs for
-            # "exp_2024-07-02T08_Meta-Llama-3-70B-Instruct-IQ1_S.gguf_a85_listgrid"
-            # due to infinite loop
+            # Parallel execution failed (e.g. stdin lost, pickling issues, timeouts)
             pass
 
         for prob_n, prob in enumerate(problems):
